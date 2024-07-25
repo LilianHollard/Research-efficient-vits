@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 import torch.nn.functional as F
 
 class cba(nn.Module):
@@ -61,3 +62,148 @@ class residual_layer(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
+
+
+#inspired by : https://uvadlc-notebooks.readthedocs.io/en/latest/tutorial_notebooks/tutorial6/Transformers_and_MHAttention.html
+class MultiHeadAttention(nn.Module):
+    def __init__(self, input_dim, embed_dim, num_heads):
+        super().__init__()
+        assert embed_dim % num_heads == 0, "Embedding dimension must be 0 modulo number of heads."
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        self.qkv = nn.Linear(embed_dim, 3*embed_dim, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+
+        self.xavier_uniform()
+
+    def xavier_uniform(self):
+        nn.init.xavier_uniform_(self.qkv.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        # if bias
+        # self.qkv.bias.data.fill_(0)
+        ##self.out_proj.bias.data.fill_(0)
+
+
+    def forward(self, x):
+        b, l, d = x.size()
+        qkv = self.qkv(x)
+
+        qkv = qkv.reshape(b, l, self.num_heads, 3*self.head_dim)
+        qkv = qkv.permute(0,2,1,3) #Batch, Head, SeqLen, Dims
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        ### Scaled dot product
+        attn = (q @ k.transpose(-2, -1))
+        attn = attn / math.sqrt(q.size()[-1])
+        attn = F.softmax(attn, dim=-1)
+        values = torch.matmul(attn, v)
+        ### End
+
+        values = values.permute(0, 2, 1, 3) #B, S, H, D
+        values = values.reshape(b, l, self.embed_dim)
+        outputs = self.out_proj(values)
+
+        return outputs
+
+
+#Encoder from Attention is all you need
+class classic_encoder(nn.Module):
+    def __init__(self, input_dim, num_heads, dim_ffn, dropout=0.0):
+        super().__init__()
+
+        self.mha = MultiHeadAttention(input_dim, input_dim, num_heads)
+
+
+        #Two-layer MLP
+        self.linear_net = nn.Sequential(
+            nn.Linear(input_dim, dim_ffn),
+            nn.Dropout(),
+            nn.ReLU(inplace=True),
+            nn.Linear(dim_ffn, input_dim)
+        )
+
+        self.norm1 = nn.LayerNorm(input_dim)
+        self.norm2 = nn.LayerNorm(input_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        attn = self.mha(x)
+        x = x + self.dropout(attn)
+        x = self.norm1(x)
+
+        y = self.linear_net(x)
+        x = x + self.dropout(y)
+        x = self.norm2(x)
+
+        return x
+
+
+class vit_encoder(nn.Module):
+    def __init__(self, embed_dim, hidden_dim, num_heads, dropout=0.0):
+         super().__init__()
+
+         self.layernorm1 = nn.LayerNorm(embed_dim)
+         self.layernorm2 = nn.LayerNorm(hidden_dim)
+
+         self.attn = MultiHeadAttention(embed_dim, embed_dim, num_heads)
+
+         self.linear = nn.Sequential(
+             nn.Linear(embed_dim, hidden_dim),
+             nn.GELU(),
+             nn.Dropout(dropout),
+             nn.Linear(hidden_dim, embed_dim),
+             nn.Dropout(dropout)
+         )
+
+    #Z'l = MHA(LN(Zl-1)) + Zl-1
+    #MLP(LN(Z'l)) + Z'l
+    def forward(self, x):
+        qkv = self.layernorm1(x)
+        x = x + self.attn(qkv)
+        x = x + self.linear(self.layernorm2(x))
+        return x
+
+
+class ViT(nn.Module):
+    def __init__(self, embed_dim, hidden_dim, num_heads=4, num_layers=4, num_classes=10, patch_size=16, dropout=0.0):
+        super().__init__()
+
+        self.patch_size = patch_size
+
+        #Some are using reshape and transpose fonction to create patchenizer
+        #We prefer using 2d convolutions.
+
+        self.input_layer = nn.Conv2d(3, embed_dim, patch_size, stride=patch_size, padding=0)
+
+        self.transformer = nn.Sequential(*[vit_encoder(embed_dim, hidden_dim, num_heads, dropout) for _ in range(num_layers)])
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, num_classes),
+        )
+        self.dropout = nn.Dropout(dropout)
+
+        self.pos_embedding = nn.Parameter(torch.randn(1, 1+int((224*224)/patch_size**2), embed_dim))
+
+    def forward(self, x):
+        #x <- B, C, H, W
+
+        #1. "Patchenizer" <- using convolutions
+        x = self.input_layer(x)
+        x = x.flatten(2,3).permute(0, 2, 1)
+        b,l,n = x.shape
+
+        #2. Add CLS token (I don't want to) and positional encoding (yep)
+        x = x + self.pos_embedding[:,:l]#+1] #<- check! (supposed to be +1 since we need CLS token [but I don't want to :p])
+
+        #3. Transformer
+        x = self.dropout(x)
+        #x = x.transpose(1,2)
+        x = self.transformer(x)
+
+
+
+        return x
+

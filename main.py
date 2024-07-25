@@ -27,7 +27,7 @@ def get_args_parser():
 
     parser.add_argument('--model_path', default="", help="path to model checkpoint (mostly for validation)")
 
-    parser.add_argument('--lr', default=0.001, type=float, help='learning rate')
+    parser.add_argument('--lr', default=0.0001, type=float, help='learning rate')
     parser.add_argument('--batch-size', default=32, type=int, help='batch size')
     parser.add_argument('--epochs', default=100, type=int, help="number of epochs")
     parser.add_argument('--seed', default=42, type=int, help="training seed")
@@ -91,12 +91,12 @@ def train(args):
     train_loader, test_loader = get_data(args.data, args.batch_size, args.distributed, num_tasks, global_rank)
 
     # model dist
-    #dinov2_vits14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-    #model = custom_dino(dinov2_vits14)
-    #model.to(device)
-
-    model = ResNet(18)
+    dinov2_vits14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+    model = custom_dino(dinov2_vits14)
     model.to(device)
+
+    #model = ResNet(18)
+    #model.to(device)
 
     teacher_model = None
 
@@ -112,11 +112,11 @@ def train(args):
     linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
     args.lr = linear_scaled_lr
 
-    #opt_func = torch.optim.AdamW
-    opt_func = torch.optim.SGD
+    opt_func = torch.optim.AdamW
+    #opt_func = torch.optim.SGD
     max_lr = 0.0001
     grad_clip = 0.01
-    weight_decay = 0.001
+    weight_decay = 0.0025
 
     # history = []
     # Fitting the first 1/4 epochs

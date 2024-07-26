@@ -167,47 +167,4 @@ class vit_encoder(nn.Module):
         return x
 
 
-class ViT(nn.Module):
-    def __init__(self, embed_dim, hidden_dim, num_heads=4, num_layers=4, num_classes=10, patch_size=16, dropout=0.0):
-        super().__init__()
-
-        self.patch_size = patch_size
-
-        #Some are using reshape and transpose fonction to create patchenizer
-        #We prefer using 2d convolutions.
-
-        self.input_layer = nn.Conv2d(3, embed_dim, patch_size, stride=patch_size, padding=0)
-
-        #attn_layers = [vit_encoder(embed_dim, hidden_dim, num_heads, dropout)]
-        #attn_layers.extend([vit_encoder(hidden_dim, hidden_dim, num_heads, dropout) for _ in range(num_layers)])
-
-        self.transformer = nn.Sequential(*[vit_encoder(embed_dim, hidden_dim, num_heads, dropout) for _ in range(num_layers)])
-
-        self.mlp_head = nn.Sequential(
-            nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, num_classes),
-        )
-        self.dropout = nn.Dropout(dropout)
-
-        #+1 for the CLS embedding, however I am trying not to use it.
-        self.pos_embedding = nn.Parameter(torch.randn(1, 1+int((224*224)/patch_size**2), embed_dim))
-
-    def forward(self, x):
-        #x <- B, C, H, W
-
-        #1. "Patchenizer" <- using convolutions
-        x = self.input_layer(x) #B, D, H, W
-        x = x.flatten(2,3).permute(0, 2, 1) #B, D, N -> B, N, D
-        b,n,d = x.shape
-
-        #2. Add CLS token (I don't want to) and positional encoding (yep)
-        x = x + self.pos_embedding[:,:n]#+1] #(supposed to be +1 since we need CLS token [but I don't want to :p])
-
-        #3. Transformer
-        x = self.dropout(x)
-        x = self.transformer(x)
-
-
-
-        return x
 

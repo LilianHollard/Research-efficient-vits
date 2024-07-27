@@ -139,7 +139,7 @@ class ViT_cls(nn.Module):
         b = x.shape[0]
 
         # +1 for the CLS embedding
-        self.cls_embedding = nn.Parameter(torch.ones(b, 1, self.embed_dim),
+        self.cls_embedding = nn.Parameter(torch.ones(b, 1, self.embed_dim, device=x.device),
                                           # [batch_size, number_of_tokens, embedding_dimension]
                                           requires_grad=True)  # make sure the embedding is learnable
 

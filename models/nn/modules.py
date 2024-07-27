@@ -86,7 +86,6 @@ class MultiHeadAttention(nn.Module):
         # self.qkv.bias.data.fill_(0)
         ##self.out_proj.bias.data.fill_(0)
 
-
     def forward(self, x):
         b, l, d = x.size()
         qkv = self.qkv(x)
@@ -103,8 +102,13 @@ class MultiHeadAttention(nn.Module):
         ### End
 
         values = values.permute(0, 2, 1, 3) #B, S, H, D
+
+        #print(nn.CosineSimilarity()(values[:,:,0,:], values[:,:,1,:])) maybe like this ??
+
         values = values.reshape(b, l, self.embed_dim)
         outputs = self.out_proj(values)
+
+
 
         return outputs
 

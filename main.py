@@ -2,7 +2,7 @@ from utils.dataloader import get_data
 from utils.liltrainer import LilTrainer
 from utils.losses import DistillationLoss
 
-from models.models import custom_dino, ResNet
+from models.models import custom_dino, ResNet, ViT_cls, ViT_nocls
 
 from utils import utils
 
@@ -91,20 +91,34 @@ def train(args):
     train_loader, test_loader = get_data(args.data, args.batch_size, args.distributed, num_tasks, global_rank)
 
     # model dist
-    dinov2_vits14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
-    model = custom_dino(dinov2_vits14)
+    #dinov2_vits14 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14')
+    #model = custom_dino(dinov2_vits14)
+
+    model = ViT_cls(384, 384, 4, 12, 10, 16)
+    #model = ResNet(18)
+
+    #model.to(device)
     model.to(device)
 
-    #model = ResNet(18)
-    #model.to(device)
+    print('Loading model...')
+    print('=============================================')
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('Number of parameters:', n_parameters)
+
+    with torch.profiler.profile(with_flops=True) as p, torch.autocast('cuda'):
+        _ = model(torch.randn(1,3,224,224).to(device))
+    print(p.key_averages().table(sort_by="flops", row_limit=5))
+    print('{:.2f} GMAC (torch profile)'.format(sum(k.flops for k in p.key_averages()) / 1e9))
+    print('{:.2f} GFLOP (torch profile)'.format(sum(k.flops for k in p.key_averages()) / 1e9 * 2.0))
+
+
 
     teacher_model = None
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('Number of parameters:', n_parameters)
+
 
     trainer = LilTrainer(model)
 

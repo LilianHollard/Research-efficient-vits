@@ -1,64 +1,92 @@
 import torch
+from torch.utils.data.distributed import DistributedSampler
 
 import torchvision
 import torchvision.transforms as transforms
+from torchvision.transforms import AutoAugment, AutoAugmentPolicy
+
+import numpy as np
 
 
-from torch.utils.data.distributed import DistributedSampler
-
-CIFAR100_TRAIN_MEAN = (0.5070751592371323, 0.48654887331495095, 0.4409178433670343)
-CIFAR100_TRAIN_STD = (0.2673342858792401, 0.2564384629170883, 0.27615047132568404)
-
-
-IMGNET_TRAIN_MEAN = (0.485, 0.456, 0.406)
-IMGNET_TRAIN_STD = (0.229, 0.224, 0.225)
-
-
+# Transformations and data loading
 transform = transforms.Compose([
-    transforms.Resize((224,224)),
-    #transforms.RandomCrop(224), #weird results with random crop on validation (which I guess is due to the randomness of the cropping within the 320 by 320px of ImageNette image size)
+    transforms.Resize((32,32)),
     transforms.ToTensor(),
-    transforms.Normalize(IMGNET_TRAIN_MEAN, IMGNET_TRAIN_STD)
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
 ])
 
-train_aug_transform = transforms.Compose([
+transform_aug = transforms.Compose([
     transforms.RandomHorizontalFlip(),
-    #transforms.Resize((224,224)),
-    transforms.RandomCrop(224, padding=4),
-    # transforms.RandomRotation(15),
+    transforms.RandomCrop(32, padding=4),
     transforms.ToTensor(),
-    transforms.Normalize(IMGNET_TRAIN_MEAN, IMGNET_TRAIN_STD),
-    # transforms.RandomErasing(p=0.2, scale=(0.02, 0.33), ratio=(0.3, 3.3)),
-    # transforms.RandomPerspective(distortion_scale=0.5, p=0.5),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
 ])
 
 
-transform_high = transforms.Compose([
-    transforms.ColorJitter(0.4), #from LeVIT data color giter transform
-    transforms.AutoAugment(), #default is ImageNet auto augment policy (but I don't know if it really working or not)
-    transforms.RandomCrop(224, padding=4),
+test_transforms = transforms.Compose([
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
-    transforms.Normalize(IMGNET_TRAIN_MEAN, IMGNET_TRAIN_STD)
+    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 ])
 
-
-#EfficientViT paper
-#Mixup
-#Auto-augmentation
-#random erasing
-
-#note : v2 is required for MixUp augmentation
 effvit_transforms = transforms.Compose([
-    transforms.AutoAugment(),
-#    transforms.RandomErasing(), doesnt work ?
-    transforms.RandomCrop(224, padding=4),
+    AutoAugment(),
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
-    transforms.Normalize(IMGNET_TRAIN_MEAN, IMGNET_TRAIN_STD),
+    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 ])
 
-def get_data(path, batch_size=32, ddp=False, num_replicas=None, rank=None):
+
+
+def add_noise_dataset(dataset, noise_ratio=0.1):
+    num_samples = len(dataset)
+    
+    num_noisy = int(noise_ratio * num_samples)
+    
+    labels = np.array(dataset.targets)
+    
+    #select index to modify
+    noisy_indices = np.random.choice(num_samples, num_noisy, replace=False)
+    
+    for idx in noisy_indices:
+        current_label = labels[idx]
+        #give random value between 0 and 9
+        new_label = np.random.choice([i for i in range(10) if i != current_label])
+        labels[idx] = new_label
+    
+    dataset.targets = labels.tolist()
+    
+        
+
+
+def add_noise(labels, noise):
+    size = labels.size() 
+    num_random_elements = int(labels.numel() * noise)
+    #generate random index
+    indices = torch.randperm(labels.numel())[:num_random_elements]
+    tensor_flat = labels.view(-1)
+
+    # Remplacer les valeurs aux indices sélectionnés par des valeurs différentes
+    for idx in indices:
+        current_value = tensor_flat[idx]
+        new_value = torch.randint(0, 9, (1,)).item()  # Générer une valeur différente
+        # Boucler jusqu'à ce que la nouvelle valeur soit différente de l'actuelle
+        while new_value == current_value:
+            new_value = torch.randint(0, 9, (1,)).item()
+        tensor_flat[idx] = new_value
+
+    # Reshaper le tensor pour revenir à sa taille d'origine
+    tensor = tensor_flat.view(size)
+    return tensor
+
+def get_data(path, batch_size=32, ddp=False, num_replicas=None, rank=None, noise=0.0):
     trainset = torchvision.datasets.ImageFolder(path+"/train/",
                                                 transform=effvit_transforms)
+    
+    
+    if noise > 0.0:
+        add_noise_dataset(trainset, noise)
+    
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size, shuffle=True, num_workers=8, pin_memory=True)
 
@@ -68,8 +96,30 @@ def get_data(path, batch_size=32, ddp=False, num_replicas=None, rank=None):
                                                                              rank=rank))
 
     testset = torchvision.datasets.ImageFolder(path+"/val/",
-                                               transform=transform)
+                                               transform=test_transforms)
     testloader = torch.utils.data.DataLoader(
-        testset, batch_size * 2, pin_memory=True, num_workers=4)
+        testset, batch_size//2, pin_memory=True, num_workers=8)
 
     return trainloader, testloader
+
+
+def get_cifar(path, batch_size=32, ddp=False, num_replicas=None, rank=None, noise=0.0):
+    train_dataset = torchvision.datasets.CIFAR10(root=path, train=True, download=True, transform=transform_aug)
+    test_dataset = torchvision.datasets.CIFAR10(root=path, train=False, download=True, transform=transform)
+    
+    if noise > 0.0:
+        add_noise_dataset(train_dataset, noise)
+    
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=8,  pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size//2, shuffle=False, num_workers=8, pin_memory=True)
+    
+    if ddp:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size, shuffle=False, num_workers=8, pin_memory=True,
+                                             sampler=DistributedSampler(train_dataset, num_replicas=num_replicas, rank=rank))
+        
+        
+    
+    
+    return train_loader, test_loader
+        
+   

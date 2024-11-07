@@ -2,6 +2,8 @@ import torch
 import torch.distributed as dist
 import os
 import time
+import numpy as np
+import torch.nn as nn
 
 
 def get_lr(optimizer):
@@ -83,3 +85,34 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
 
 
+
+### AUGMENTATIONS
+
+# Mixup and CutMix functions
+def mixup_data(x, y, alpha=1.0):
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def cutmix_data(x, y, alpha=1.0):
+    lam = np.random.beta(alpha, alpha)
+    batch_size, _, h, w = x.size()
+    index = torch.randperm(batch_size).to(x.device)
+    cx, cy = np.random.randint(w), np.random.randint(h)
+    cut_w = int(w * np.sqrt(1 - lam))
+    cut_h = int(h * np.sqrt(1 - lam))
+    x1 = np.clip(cx - cut_w // 2, 0, w)
+    y1 = np.clip(cy - cut_h // 2, 0, h)
+    x2 = np.clip(cx + cut_w // 2, 0, w)
+    y2 = np.clip(cy + cut_h // 2, 0, h)
+    
+    x[:, :, y1:y2, x1:x2] = x[index, :, y1:y2, x1:x2]
+    lam = 1 - ((x2 - x1) * (y2 - y1) / (h * w))
+    y_a, y_b = y, y[index]
+    return x, y_a, y_b, lam
